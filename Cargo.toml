@@ -2,3 +2,7 @@
 edition = "2018"
 name = "alphametics"
 version = "1.3.0"
+
+
+[dev_dependencies]
+maplit = "1.0"
