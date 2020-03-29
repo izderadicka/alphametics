@@ -1,32 +1,29 @@
 #![feature(generators, generator_trait)]
 
-use std::collections::{HashMap, HashSet};
-use fasthash::sea::Hasher64;
-
-type Hash64 = std::hash::BuildHasherDefault<Hasher64>;
-type FastMap<K,V> = HashMap<K,V, Hash64>;
-type FastSet<V> = HashSet<V, Hash64>;
+use std::collections::HashMap;
+use fastmap::{FastMap, FastSet};
 
 pub mod other;
+mod fastmap;
 
 #[derive(Debug)]
 struct Column<'a> {
-    left: Vec<char>,
-    right: char,
-    letters: FastSet<char>,
-    leading_letters: &'a FastSet<char>
+    left: Vec<u8>,
+    right: u8,
+    letters: FastSet,
+    leading_letters: &'a FastSet
 }
 
 impl <'a> Column<'a> {
-    fn evaluate(&self, mapping: &FastMap<char, u8>, carry: u32) -> Option<u32> {
-        if mapping.iter().any(|(c,v)| *v == 0 && self.leading_letters.contains(c)) {
+    fn evaluate(&self, mapping: &FastMap, carry: u32) -> Option<u32> {
+        if mapping.iter().any(|(c,v)| v == 0 && self.leading_letters.contains(c)) {
             return None
         }
-        let rs = *mapping.get(&self.right)? as u32;
+        let rs = mapping.get(self.right)? as u32;
         let ls = self
             .left
             .iter()
-            .filter_map(|x| mapping.get(x).map(|&x| x as u32))
+            .filter_map(|x| mapping.get(*x).map(|x| x as u32))
             .sum::<u32>() + carry;
 
         if ls % 10 == rs {
@@ -39,10 +36,10 @@ impl <'a> Column<'a> {
 
 #[derive(Debug)]
 struct Expression {
-    left: Vec<Vec<char>>,
-    right: Vec<char>,
-    letters: FastSet<char>,
-    leading_letters: FastSet<char>,
+    left: Vec<Vec<u8>>,
+    right: Vec<u8>,
+    letters: FastSet,
+    leading_letters: FastSet,
 }
 
 impl Expression {
@@ -51,10 +48,10 @@ impl Expression {
         if parts.len() != 2 {
             return None;
         }
-        let right: Vec<_> = parts[1].trim().chars().collect();
+        let right: Vec<_> = parts[1].trim().as_bytes().to_vec();
         let left: Vec<Vec<_>> = parts[0]
             .split('+')
-            .map(|p| p.trim().chars().collect())
+            .map(|p| p.trim().as_bytes().to_vec())
             .collect();
         let mut letters = FastSet::default();
         letters.extend(right.iter());
@@ -77,13 +74,13 @@ impl Expression {
         })
     }
 
-    fn evaluate(&self, mapping: &FastMap<char, u8>) -> bool {
+    fn evaluate(&self, mapping: &FastMap) -> bool {
         let sum_right = word_to_number(&self.right, mapping);
         if let Some(zero_char) = mapping
             .iter()
-            .find_map(|(k, v)| if *v == 0 { Some(k) } else { None })
+            .find_map(|(k, v)| if v == 0 { Some(k) } else { None })
         {
-            if self.leading_letters.contains(&zero_char) {
+            if self.leading_letters.contains(zero_char) {
                 return false;
             }
         };
@@ -106,13 +103,13 @@ impl<'a> Iterator for ColumnIter<'a> {
     type Item = Column<'a>;
     fn next(&mut self) -> Option<Self::Item> {
         let right = *self.expr.right.iter().rev().nth(self.column)?;
-        let left: Vec<char> = self
+        let left: Vec<u8> = self
             .expr
             .left
             .iter()
             .filter_map(|w| w.iter().rev().nth(self.column).cloned())
             .collect();
-        let letters: FastSet<char> = std::iter::once(right).chain(left.iter().cloned()).collect();
+        let letters: FastSet = std::iter::once(right).chain(left.iter().cloned()).collect();
         self.column += 1;
         Some(Column {
             right,
@@ -135,10 +132,10 @@ impl<'a> IntoIterator for &'a Expression {
     }
 }
 
-fn word_to_number(word: &[char], mapping: &FastMap<char, u8>) -> u64 {
+fn word_to_number(word: &[u8], mapping: &FastMap) -> u64 {
     word.iter()
-        .map(|ch| mapping.get(ch).unwrap())
-        .fold(0, |res, x| res * 10 + (*x as u64))
+        .map(|ch| mapping.get(*ch).unwrap())
+        .fold(0, |res, x| res * 10 + (x as u64))
 }
 
 const DIGITS: usize = 10;
@@ -147,7 +144,7 @@ struct Combinator {
     numbers: Vec<u8>,
     indices: Vec<usize>,
     cycles: Vec<usize>,
-    letters: Vec<char>,
+    letters: Vec<u8>,
     r: Option<usize>,
     k: usize,
     n: usize
@@ -156,7 +153,7 @@ struct Combinator {
 impl Combinator {
     fn new<I, N>(letters: I, numbers: N) -> Self
     where
-        I: IntoIterator<Item = char>,
+        I: IntoIterator<Item = u8>,
         N: IntoIterator<Item = u8>,
     {
         let letters: Vec<_> = letters.into_iter().collect();
@@ -177,7 +174,7 @@ impl Combinator {
 }
 
 impl Iterator for Combinator {
-    type Item = FastMap<char, u8>;
+    type Item = FastMap;
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(r) = self.r {
             self.cycles[r] -= 1;
@@ -221,32 +218,32 @@ pub fn solve(input: &str) -> Option<HashMap<char, u8>> {
     let cols: Vec<_> = e.into_iter().collect();
     let res = solve_inner(&cols, 0, FastMap::default(), 0);
     // need to convert to hashmap with other hasher
-    res.map(|m| m.iter().map(|(&k,&v)| (k,v)).collect())
+    res.map(|m| m.iter().map(|(k,v)| (k as char,v)).collect())
 }
 
 fn solve_inner(
     c: &[Column],
     pos: usize,
-    prev_mapping: FastMap<char, u8>,
+    prev_mapping: FastMap,
     carry: u32,
-) -> Option<FastMap<char, u8>>
+) -> Option<FastMap>
 {
     match c.get(pos) {
         Some(column) => {
-            let used_letters = prev_mapping.keys().cloned().collect::<FastSet<_>>();
+            let used_letters = prev_mapping.keys().collect::<FastSet>();
             let missing_letters: Vec<_> =
-                column.letters.difference(&used_letters).cloned().collect();
+                column.letters.difference(&used_letters).collect();
             
             if missing_letters.is_empty() {
                 if let Some(new_carry) = column.evaluate(&prev_mapping, carry) {
                     return solve_inner(c, pos+1, prev_mapping, new_carry);
                 }
             } else {
-                let used_numbers: FastSet<_> = prev_mapping.values().cloned().collect();
-                let numbers = (0u8..DIGITS as u8).filter(|x| !used_numbers.contains(&x));
+                let used_numbers: FastSet = prev_mapping.values().collect();
+                let numbers = (0u8..DIGITS as u8).filter(|x| !used_numbers.contains(*x));
                 let combinator = Combinator::new(missing_letters, numbers);
                 for mut mapping in combinator {
-                    mapping.extend(&prev_mapping);
+                    mapping.extend(prev_mapping.iter());
                     if let Some(new_carry) = column.evaluate(&mapping, carry) {
                         if let Some(sol) = solve_inner(c, pos+1, mapping, new_carry) {
                             return Some(sol)
@@ -268,23 +265,23 @@ mod tests {
     #[test]
     fn parse() {
         let e = Expression::parse("AA + BB == CC").unwrap();
-        assert_eq!(vec!['C', 'C'], e.right);
+        assert_eq!(vec![b'C', b'C'], e.right);
         assert_eq!(2, e.left.len());
-        assert_eq!(vec!['B', 'B'], e.left[1]);
+        assert_eq!(vec![b'B', b'B'], e.left[1]);
     }
 
     #[test]
     fn combinator() {
-        let letters = vec!['A', 'B'];
-        let combinations: Vec<FastMap<char, u8>> = Combinator::new(letters, 0..10).collect();
+        let letters = vec![b'A', b'B'];
+        let combinations: Vec<FastMap> = Combinator::new(letters, 0..10).collect();
         println!("{:?}", combinations);
         assert_eq!(90, combinations.len());
     }
 
     #[test]
     fn combinator_seven_numbers() {
-        let letters = vec!['A', 'B'];
-        let combinations: Vec<FastMap<char, u8>> = Combinator::new(letters, 0..7).collect();
+        let letters = vec![b'A', b'B'];
+        let combinations: Vec<FastMap> = Combinator::new(letters, 0..7).collect();
         println!("{:?}", combinations);
         assert_eq!(7*6, combinations.len());
     }
@@ -292,15 +289,15 @@ mod tests {
     #[test]
     fn combinator_no_letters() {
         let letters = vec![];
-        let combinations: Vec<FastMap<char, u8>> = Combinator::new(letters, 0..10).collect();
+        let combinations: Vec<FastMap> = Combinator::new(letters, 0..10).collect();
         println!("{:?}", combinations);
         assert_eq!(0, combinations.len());
     }
 
     #[test]
     fn combinator_no_numbers() {
-        let letters = vec!['A', 'B'];
-        let combinations: Vec<FastMap<char, u8>> = Combinator::new(letters, 0..0).collect();
+        let letters = vec![b'A', b'B'];
+        let combinations: Vec<FastMap> = Combinator::new(letters, 0..0).collect();
         assert_eq!(0, combinations.len());
     }
 
@@ -308,10 +305,10 @@ mod tests {
 
     fn w2n_test() {
         let mut m = FastMap::default();
-        m.insert('A', 1u8);
-        m.insert('B', 2u8);
-        m.insert('C', 3u8);
-        let word = vec!['A', 'B', 'C'];
+        m.insert(b'A', 1u8);
+        m.insert(b'B', 2u8);
+        m.insert(b'C', 3u8);
+        let word = vec![b'A', b'B', b'C'];
         let res = word_to_number(&word, &m);
         assert_eq!(123, res);
     }
@@ -335,9 +332,9 @@ mod tests {
         assert_eq!(2, cols.len());
         let s = cols[0].evaluate(
             &fastmap! {
-                'B' => 1,
-                'D' => 2,
-                'F' => 3
+                b'B' => 1,
+                b'D' => 2,
+                b'F' => 3
             },
             0,
         );
@@ -345,9 +342,9 @@ mod tests {
 
         let s = cols[1].evaluate(
             &fastmap! {
-                'A' => 9,
-                'C' => 9,
-                'E' => 8
+                b'A' => 9,
+                b'C' => 9,
+                b'E' => 8
             },
             0,
         );
