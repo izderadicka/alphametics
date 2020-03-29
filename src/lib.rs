@@ -1,25 +1,33 @@
 #![feature(generators, generator_trait)]
 
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use fasthash::sea::Hasher64;
+
+type Hash64 = std::hash::BuildHasherDefault<Hasher64>;
+type FastMap<K,V> = HashMap<K,V, Hash64>;
+type FastSet<V> = HashSet<V, Hash64>;
 
 pub mod other;
 
 #[derive(Debug)]
-struct Column {
+struct Column<'a> {
     left: Vec<char>,
     right: char,
-    letters: HashSet<char>,
+    letters: FastSet<char>,
+    leading_letters: &'a FastSet<char>
 }
 
-impl Column {
-    fn evaluate(&self, mapping: &HashMap<char, u8>, carry: u32) -> Option<u32> {
-        let rs = *mapping.get(&self.right)? as u32 + carry;
-        let ls: u32 = self
+impl <'a> Column<'a> {
+    fn evaluate(&self, mapping: &FastMap<char, u8>, carry: u32) -> Option<u32> {
+        if mapping.iter().any(|(c,v)| *v == 0 && self.leading_letters.contains(c)) {
+            return None
+        }
+        let rs = *mapping.get(&self.right)? as u32;
+        let ls = self
             .left
             .iter()
             .filter_map(|x| mapping.get(x).map(|&x| x as u32))
-            .sum();
+            .sum::<u32>() + carry;
 
         if ls % 10 == rs {
             Some(ls / 10)
@@ -33,8 +41,8 @@ impl Column {
 struct Expression {
     left: Vec<Vec<char>>,
     right: Vec<char>,
-    letters: HashSet<char>,
-    leading_letters: HashSet<char>,
+    letters: FastSet<char>,
+    leading_letters: FastSet<char>,
 }
 
 impl Expression {
@@ -48,14 +56,14 @@ impl Expression {
             .split('+')
             .map(|p| p.trim().chars().collect())
             .collect();
-        let mut letters = HashSet::new();
+        let mut letters = FastSet::default();
         letters.extend(right.iter());
         letters.extend(left.iter().flatten());
         if letters.len() > 10 {
             // letters mapping cannot be 1-1
             return None;
         }
-        let mut leading_letters = HashSet::new();
+        let mut leading_letters = FastSet::default();
         if let Some(&l) = right.first() {
             leading_letters.insert(l);
         };
@@ -69,7 +77,7 @@ impl Expression {
         })
     }
 
-    fn evaluate(&self, mapping: &HashMap<char, u8>) -> bool {
+    fn evaluate(&self, mapping: &FastMap<char, u8>) -> bool {
         let sum_right = word_to_number(&self.right, mapping);
         if let Some(zero_char) = mapping
             .iter()
@@ -95,7 +103,7 @@ struct ColumnIter<'a> {
 }
 
 impl<'a> Iterator for ColumnIter<'a> {
-    type Item = Column;
+    type Item = Column<'a>;
     fn next(&mut self) -> Option<Self::Item> {
         let right = *self.expr.right.iter().rev().nth(self.column)?;
         let left: Vec<char> = self
@@ -104,18 +112,19 @@ impl<'a> Iterator for ColumnIter<'a> {
             .iter()
             .filter_map(|w| w.iter().rev().nth(self.column).cloned())
             .collect();
-        let letters: HashSet<char> = std::iter::once(right).chain(left.iter().cloned()).collect();
+        let letters: FastSet<char> = std::iter::once(right).chain(left.iter().cloned()).collect();
         self.column += 1;
         Some(Column {
             right,
             left,
             letters,
+            leading_letters: & self.expr.leading_letters
         })
     }
 }
 
 impl<'a> IntoIterator for &'a Expression {
-    type Item = Column;
+    type Item = Column<'a>;
     type IntoIter = ColumnIter<'a>;
 
     fn into_iter(self) -> ColumnIter<'a> {
@@ -126,7 +135,7 @@ impl<'a> IntoIterator for &'a Expression {
     }
 }
 
-fn word_to_number(word: &[char], mapping: &HashMap<char, u8>) -> u64 {
+fn word_to_number(word: &[char], mapping: &FastMap<char, u8>) -> u64 {
     word.iter()
         .map(|ch| mapping.get(ch).unwrap())
         .fold(0, |res, x| res * 10 + (*x as u64))
@@ -141,6 +150,7 @@ struct Combinator {
     letters: Vec<char>,
     r: Option<usize>,
     k: usize,
+    n: usize
 }
 
 impl Combinator {
@@ -158,25 +168,26 @@ impl Combinator {
             indices: (0..n).collect(),
             letters,
             numbers,
-            cycles: ((n - k + 1)..=DIGITS).rev().collect(),
+            cycles: ((n - k + 1)..=n).rev().collect(),
             r: None,
             k,
+            n
         }
     }
 }
 
 impl Iterator for Combinator {
-    type Item = HashMap<char, u8>;
+    type Item = FastMap<char, u8>;
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(r) = self.r {
             self.cycles[r] -= 1;
             if self.cycles[r] == 0 {
                 let first = self.indices[r];
-                for j in r..DIGITS - 1 {
+                for j in r..self.n - 1 {
                     self.indices[j] = self.indices[j + 1]
                 }
-                self.indices[DIGITS - 1] = first;
-                self.cycles[r] = DIGITS - r;
+                self.indices[self.n - 1] = first;
+                self.cycles[r] = self.n - r;
                 if r > 0 {
                     self.r = Some(r - 1);
                     return self.next();
@@ -184,7 +195,7 @@ impl Iterator for Combinator {
                     return None;
                 }
             } else {
-                self.indices.swap(r, DIGITS - self.cycles[r]);
+                self.indices.swap(r, self.n - self.cycles[r]);
                 self.r = Some(self.k - 1)
             }
         } else {
@@ -207,36 +218,44 @@ impl Iterator for Combinator {
 
 pub fn solve(input: &str) -> Option<HashMap<char, u8>> {
     let e = Expression::parse(input)?;
-    solve_inner(e.into_iter(), HashMap::new(), 0)
+    let cols: Vec<_> = e.into_iter().collect();
+    let res = solve_inner(&cols, 0, FastMap::default(), 0);
+    // need to convert to hashmap with other hasher
+    res.map(|m| m.iter().map(|(&k,&v)| (k,v)).collect())
 }
 
-fn solve_inner<I>(
-    mut c: I,
-    prev_mapping: HashMap<char, u8>,
+fn solve_inner(
+    c: &[Column],
+    pos: usize,
+    prev_mapping: FastMap<char, u8>,
     carry: u32,
-) -> Option<HashMap<char, u8>>
-where
-    I: Iterator<Item = Column>,
+) -> Option<FastMap<char, u8>>
 {
-    match c.next() {
+    match c.get(pos) {
         Some(column) => {
-            let used_letters = prev_mapping.keys().cloned().collect::<HashSet<_>>();
+            let used_letters = prev_mapping.keys().cloned().collect::<FastSet<_>>();
             let missing_letters: Vec<_> =
                 column.letters.difference(&used_letters).cloned().collect();
-            let used_numbers: HashSet<_> = prev_mapping.values().cloned().collect();
-            let numbers = (0u8..DIGITS as u8).filter(|x| !used_numbers.contains(&x));
+            
             if missing_letters.is_empty() {
-                solve_inner(c, prev_mapping, carry)
+                if let Some(new_carry) = column.evaluate(&prev_mapping, carry) {
+                    return solve_inner(c, pos+1, prev_mapping, new_carry);
+                }
             } else {
+                let used_numbers: FastSet<_> = prev_mapping.values().cloned().collect();
+                let numbers = (0u8..DIGITS as u8).filter(|x| !used_numbers.contains(&x));
                 let combinator = Combinator::new(missing_letters, numbers);
                 for mut mapping in combinator {
                     mapping.extend(&prev_mapping);
                     if let Some(new_carry) = column.evaluate(&mapping, carry) {
-                        return solve_inner(c, mapping, new_carry);
+                        if let Some(sol) = solve_inner(c, pos+1, mapping, new_carry) {
+                            return Some(sol)
+                        };
                     }
                 }
-                None
+                
             }
+            None
         }
         None => Some(prev_mapping),
     }
@@ -257,15 +276,23 @@ mod tests {
     #[test]
     fn combinator() {
         let letters = vec!['A', 'B'];
-        let combinations: Vec<HashMap<char, u8>> = Combinator::new(letters, 0..10).collect();
+        let combinations: Vec<FastMap<char, u8>> = Combinator::new(letters, 0..10).collect();
         println!("{:?}", combinations);
         assert_eq!(90, combinations.len());
     }
 
     #[test]
+    fn combinator_seven_numbers() {
+        let letters = vec!['A', 'B'];
+        let combinations: Vec<FastMap<char, u8>> = Combinator::new(letters, 0..7).collect();
+        println!("{:?}", combinations);
+        assert_eq!(7*6, combinations.len());
+    }
+
+    #[test]
     fn combinator_no_letters() {
         let letters = vec![];
-        let combinations: Vec<HashMap<char, u8>> = Combinator::new(letters, 0..10).collect();
+        let combinations: Vec<FastMap<char, u8>> = Combinator::new(letters, 0..10).collect();
         println!("{:?}", combinations);
         assert_eq!(0, combinations.len());
     }
@@ -273,14 +300,14 @@ mod tests {
     #[test]
     fn combinator_no_numbers() {
         let letters = vec!['A', 'B'];
-        let combinations: Vec<HashMap<char, u8>> = Combinator::new(letters, 0..0).collect();
+        let combinations: Vec<FastMap<char, u8>> = Combinator::new(letters, 0..0).collect();
         assert_eq!(0, combinations.len());
     }
 
     #[test]
 
     fn w2n_test() {
-        let mut m = HashMap::new();
+        let mut m = FastMap::default();
         m.insert('A', 1u8);
         m.insert('B', 2u8);
         m.insert('C', 3u8);
@@ -289,14 +316,25 @@ mod tests {
         assert_eq!(123, res);
     }
 
+    macro_rules! fastmap {
+        ($($k:expr => $v:expr),*) => {
+            {
+                let mut m = FastMap::default();
+                $(
+                    m.insert($k, $v);
+                )*
+                m
+            }
+        };
+    }
+
     #[test]
     fn test_columns() {
-        use maplit::hashmap;
         let e = Expression::parse("AB + CD == EF").unwrap();
         let cols: Vec<_> = (&e).into_iter().collect();
         assert_eq!(2, cols.len());
         let s = cols[0].evaluate(
-            &hashmap! {
+            &fastmap! {
                 'B' => 1,
                 'D' => 2,
                 'F' => 3
@@ -306,7 +344,7 @@ mod tests {
         assert_eq!(Some(0), s);
 
         let s = cols[1].evaluate(
-            &hashmap! {
+            &fastmap! {
                 'A' => 9,
                 'C' => 9,
                 'E' => 8

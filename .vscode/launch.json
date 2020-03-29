@@ -13,11 +13,11 @@
                     "test",
                     "--no-run",
                     "--test",
-                    "other"
+                    "alphametics"
                 ]
             },
             "program": "${cargo:program}",
-            "args": []
+            "args": ["test_with_three_letters"]
         },
         {
             "type": "lldb",
