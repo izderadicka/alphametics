@@ -1,5 +1,3 @@
-#![feature(generators, generator_trait)]
-
 use std::collections::{HashMap, HashSet};
 use fasthash::sea::Hasher64;
 
