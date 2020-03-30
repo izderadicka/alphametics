@@ -1,4 +1,3 @@
-use alphametics::solve;
 use std::collections::HashMap;
 
 fn main() {
