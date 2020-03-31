@@ -3,7 +3,6 @@ use std::iter::FromIterator;
 #[derive(Debug)]
 pub struct FastMap {
     data: Vec<Option<u8>>,
-    offset: usize,
     len: usize,
 }
 
@@ -11,19 +10,12 @@ impl FastMap {
     pub fn new() -> Self {
         FastMap {
             data: vec![None; 256],
-            offset: 0,
             len: 0,
         }
     }
 
-    fn idx(&self, k: u8) -> usize {
-        assert!(k as usize >= self.offset);
-        k as usize - self.offset
-    }
-
     pub fn insert(&mut self, k: u8, v: u8) -> Option<u8> {
-        assert!(k as usize >= self.offset);
-        let index = self.idx(k);
+        let index = k as usize;
         let prev = self.data[index].take();
         self.data[index] = Some(v);
         if prev.is_none() {
@@ -33,8 +25,7 @@ impl FastMap {
     }
 
     pub fn get(&self, k: u8) -> Option<u8> {
-        let index = self.idx(k);
-        self.data[index]
+        self.data[k as usize]
     }
 
     pub fn len(&self) -> usize {
